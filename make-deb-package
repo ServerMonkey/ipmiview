@@ -1,0 +1,100 @@
+#!/bin/sh
+
+# run from anywhere
+APP_DIR_FULL=$(realpath "$0")
+APP_DIR=$(dirname "$APP_DIR_FULL")
+cd "$APP_DIR" || exit 1
+
+# automatic increase minor version number whith each build
+VERSION_FILE="version"
+VERSION_MAJOR=$(sed -n '1p' $VERSION_FILE)
+VERSION_MINOR=$(sed -n '2p' $VERSION_FILE)
+VERSION_MINOR_NEW=$((1 + VERSION_MINOR))
+sed -i "2 s/$VERSION_MINOR\$/$VERSION_MINOR_NEW/g" $VERSION_FILE
+VERSION="$VERSION_MAJOR.$VERSION_MINOR_NEW"
+
+# variables
+NAME="ipmiview"
+RELEASES="releases"
+TARGET="DEBIAN"
+IPMIVIEW="ipmiview.tgz"
+IPMIVIEW_MD5="32ad34665fed7b0ad9fbe53efa19a519"
+PATH_BASE="./$RELEASES/$NAME-$VERSION"
+PATH_INSTALL="$PATH_BASE/usr/local"
+PATH_BIN="$PATH_INSTALL/bin"
+PATH_SHARE="$PATH_INSTALL/share/$NAME"
+PATH_TARGET="$PATH_BASE/$TARGET"
+
+# delete the old build
+echo "Cleaning up old build"
+rm -rf "$PATH_BASE"
+
+# copy relevant files from source to release
+echo "Copying relevant source files"
+mkdir -p "$PATH_SHARE"
+cp -t "$PATH_SHARE" "README.md" "copyright" || exit 1
+mkdir -p "$PATH_BIN"
+chmod 0755 "ikvm" "supermicro-auto-browse"
+cp -t "$PATH_BIN" "ikvm" "supermicro-auto-browse" || exit 1
+
+# try to download hpilo scripts if they don't already exist
+if [ ! -f "$IPMIVIEW" ]; then
+    FILENAME_IN="IPMIView_2.19.0_build.210401_bundleJRE_Linux_x64.tar.gz"
+    echo "Downloading $FILENAME_IN ..."
+    if ! wget -q "https://www.supermicro.com/wftp/utility/IPMIView/Linux/$FILENAME_IN" -O "$IPMIVIEW"; then
+        echo "Could not download $IPMIVIEW" >&2
+        exit 1
+    fi
+fi
+
+# verify archive
+echo "Verifying $IPMIVIEW"
+if ! echo "$IPMIVIEW_MD5 $IPMIVIEW" | md5sum -c; then
+    echo "md5sum verification failed!" >&2
+    exit 1
+fi
+
+# sort files
+echo "Extracting original ipmiview files"
+mkdir -p "orig" || exit 1
+tar zxf "$IPMIVIEW" --strip 1 -C "orig"
+mv "orig" "$PATH_SHARE/orig" || exit 1
+
+# create Debian control file
+echo "Creating CONTROL file"
+mkdir -p "$PATH_TARGET"
+echo "Package: $NAME
+Version: $VERSION
+Section: net
+Priority: optional
+Architecture: all
+Depends: xdotool, netcat, curl (>= 7.64)
+Recommends: chromium
+Maintainer: Bodo Endres <dev@muspekaren.se>
+Description: IPMIView Wrapper
+ A terminal wrapper for Supermicro IPMIView toolset version 2.19.0 (06-04-2021).
+" >"$PATH_TARGET/control"
+
+# build
+echo "Building"
+fakeroot dpkg-deb --build "$PATH_BASE"
+
+# pack source files
+echo "Packing source"
+zip -q -r "$RELEASES/$NAME-$VERSION.source.zip" ./* \
+    -x $RELEASES\* \
+    -x .*\* \
+    -x ./*DEV_\*
+wait
+
+# replace latest version
+cp "$PATH_BASE.deb" "$RELEASES/$NAME-LATEST.deb"
+cp "$PATH_BASE.source.zip" "$RELEASES/$NAME-LATEST.source.zip"
+
+# clean up
+echo "Clean up"
+rm -rf "$PATH_BASE"
+
+# check
+echo "Checking:"
+lintian -c "$PATH_BASE.deb"

@@ -1,0 +1,79 @@
+#!/bin/sh
+
+# help
+if [ -z "${1}" ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    echo "Automatically login to Supermicros IPMI webfrontend."
+    echo "Usage:"
+    echo "  supermicro-auto-browse <HOST> <USER> <PASS>"
+    echo "To use HTTPS, put 'https://' before <HOST>"
+    echo "Default fallback for host without URI is 'http://'"
+    echo "Example:"
+    echo "  supermicro-auto-browse 192.168.1.10 peteradmin l33tpass"
+    echo "  supermicro-auto-browse https://myserver.lan peteradmin l33tpass"
+    echo "Ignores HTTPS errors and will connect anyway!"
+    exit 0
+fi
+
+if [ -z "${2}" ] || [ -z "${3}" ]; then
+    echo "You need to enter the username and password"
+    exit 1
+fi
+
+CHR_INSTALLED=$(command -v chromium)
+if [ -z "$CHR_INSTALLED" ]; then
+    echo "chromium is not installed. Install to make this script work."
+    exit 1
+fi
+
+# parameters
+WEB_HOST="$1"
+WEB_USER="$2"
+WEB_PASS="$3"
+
+# find redirects, used to auto parse HTTP to HTTPS
+URL=$(curl -Ls -o /dev/null -w "%{url_effective}" "$WEB_HOST/cgi/login.cgi")
+if [ "$URL" = "" ]; then
+    echo "Can't find webbserver"
+    exit 1
+fi
+
+# test website
+WEBSTATUSS=$(curl -k -Ls -w "%{http_code}\\n" "$URL" -o /dev/null)
+if [ ! "$WEBSTATUSS" = "200" ]; then
+    echo "Can't connect to webbserver, HTTP error $WEBSTATUSS"
+    exit 1
+fi
+
+# Create an autodeleted temporary directory.
+WORK="$(mktemp -d)" || exit 1
+# shellcheck disable=SC2064
+trap "cd / ; rm -rf '$WORK'" EXIT
+
+# Create a HTML page with the POST data fields,
+# and have it auto-submit when the page loads.
+cat >"$WORK/load.html" <<END
+<!DOCTYPE html>
+<html>
+ <head>
+  <title>&hellip;</title>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+  <script type="text/javascript">
+   function dosubmit() { document.forms[0].submit(); }
+  </script>
+ </head>
+ <body onload="dosubmit();">
+  <form action="$URL" method="POST" accept-charset="utf-8">
+   <input type="hidden" name="name" value="$WEB_USER">
+   <input type="hidden" name="pwd" value="$WEB_PASS">
+  </form>
+ </body>
+</html>
+END
+
+# Load the generated file in the browser.
+chromium "file://$WORK/load.html" &
+
+# Firefox returns immediately, so we want to give it a couple
+# of seconds to actually read the page we generated,
+# before we exit (and our page vanishes).
+sleep 2
