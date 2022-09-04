@@ -11,6 +11,22 @@ if [ -z "${1}" ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
     exit 0
 fi
 
+# must run as normal user
+if [ "$(id -u)" = 0 ]; then
+    echo 'This script must be run as a normal user, not root!' >&2
+    exit 1
+fi
+
+if [ -z "$(command -v xdotool)" ]; then
+    echo "xdotool is not installed. Install to make this script work."
+    exit 1
+fi
+
+# iKVM.jar will create a config file in the CWD
+WORK_DIR="$HOME/.ipmiview"
+mkdir -p "$WORK_DIR"
+cd "$WORK_DIR" || exit 1
+
 # parameters
 IKVM_IP="$1"
 IKVM_USER="$2"
@@ -64,6 +80,3 @@ for i in $IKVM_WINDOWS; do
         xdotool key --window "$TARGET_WINDOW" F7
     fi
 done
-
-# delete useless settingsfile iKVM creates
-rm -f "$HOME/iKVM.properties"

@@ -34,8 +34,8 @@ echo "Copying relevant source files"
 mkdir -p "$PATH_SHARE"
 cp -t "$PATH_SHARE" "README.md" "copyright" || exit 1
 mkdir -p "$PATH_BIN"
-chmod 0755 "ikvm" "supermicro-auto-browse"
-cp -t "$PATH_BIN" "ikvm" "supermicro-auto-browse" || exit 1
+chmod 0755 "ikvm" "supermicro-auto-browse" "ipmiview"
+cp -t "$PATH_BIN" "ikvm" "supermicro-auto-browse" "ipmiview" || exit 1
 
 # try to download hpilo scripts if they don't already exist
 if [ ! -f "$IPMIVIEW" ]; then
