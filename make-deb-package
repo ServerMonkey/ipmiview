@@ -1,9 +1,71 @@
 #!/bin/sh
+# Downloads and builds a Debian package for Supermicro IPMIView JRE bundle
+# If the URL bewlow does not work, pass a custom URL as the first argument
+
+# user variables
+# URL to the index page where you can download the Linux version of IPMIView
+SUPERMICRO_URL="https://www.supermicro.com/wdl/utility/IPMIView/Linux/"
+
+# args
+if [ -n "$1" ]; then
+    SUPERMICRO_URL="$1"
+fi
 
 # run from anywhere
 APP_DIR_FULL=$(realpath "$0")
 APP_DIR=$(dirname "$APP_DIR_FULL")
 cd "$APP_DIR" || exit 1
+
+# variables
+NAME="ipmiview"
+IPMIVIEW="$NAME.tgz"
+IPMIVIEW_TMP="$APP_DIR/$NAME-tmp"
+
+# try to download hpilo scripts if they don't already exist
+USER_AGENT="Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1; SV1)"
+if [ ! -f "$IPMIVIEW" ]; then
+    # find latest version
+    echo "Searching for the latest version on $SUPERMICRO_URL"
+    FILENAME_IN=$(wget -U "$USER_AGENT" -O - "$SUPERMICRO_URL" |
+        grep -io '<a href=['"'"'"][^"'"'"']*['"'"'"]' |
+        sed -e 's/^<a href=["'"'"']//i' -e 's/["'"'"']$//i' |
+        grep -i ".tar.gz")
+
+    if [ -z "$FILENAME_IN" ]; then
+        echo "Failed to find the latest version" >&2
+        exit 1
+    fi
+
+    echo "Downloading $FILENAME_IN ..."
+    if ! wget -q "https://www.supermicro.com/$FILENAME_IN" -O "$IPMIVIEW"; then
+        echo "Failed to download IMPIview" >&2
+        exit 1
+    fi
+else
+    echo "Existing $IPMIVIEW found, skipping download"
+fi
+
+# extract files
+echo "Extracting original ipmiview files"
+rm -rf "$IPMIVIEW_TMP"
+mkdir -p "$IPMIVIEW_TMP" || exit 1
+tar zxf "$IPMIVIEW" --strip 1 -C "$IPMIVIEW_TMP" || exit 1
+
+# find version
+NOTES="$IPMIVIEW_TMP/ReleaseNotes.txt"
+if [ ! -f "$NOTES" ]; then
+    echo "Failed to find file $NOTES" >&2
+    exit 1
+fi
+# shellcheck disable=SC2002
+IPMI_VER=$(cat "$NOTES" |
+    grep Version | grep build | head -n1 |
+    sed -e 's/Version //g' -e 's/ build /\./g' | tr -dc '[:print:]')
+if [ -z "$IPMI_VER" ]; then
+    echo "Failed to find IPMIView version" >&2
+    exit 1
+fi
+echo "IPMIView version is: $IPMI_VER"
 
 # automatic increase minor version number whith each build
 VERSION_FILE="version"
@@ -11,54 +73,28 @@ VERSION_MAJOR=$(sed -n '1p' $VERSION_FILE)
 VERSION_MINOR=$(sed -n '2p' $VERSION_FILE)
 VERSION_MINOR_NEW=$((1 + VERSION_MINOR))
 sed -i "2 s/$VERSION_MINOR\$/$VERSION_MINOR_NEW/g" $VERSION_FILE
-VERSION="$VERSION_MAJOR.$VERSION_MINOR_NEW"
+VERSION="$VERSION_MAJOR.$VERSION_MINOR_NEW.$IPMI_VER"
 
-# variables
-NAME="ipmiview"
 RELEASES="releases"
 TARGET="DEBIAN"
-IPMIVIEW="ipmiview.tgz"
-IPMIVIEW_MD5="32ad34665fed7b0ad9fbe53efa19a519"
-PATH_BASE="./$RELEASES/$NAME-$VERSION"
+PATH_BASE="$APP_DIR/$RELEASES/$NAME-$VERSION"
 PATH_INSTALL="$PATH_BASE/usr/local"
 PATH_BIN="$PATH_INSTALL/bin"
 PATH_SHARE="$PATH_INSTALL/share/$NAME"
 PATH_TARGET="$PATH_BASE/$TARGET"
 
 # delete the old build
-echo "Cleaning up old build"
+echo "Cleaning up old build in $PATH_BASE"
 rm -rf "$PATH_BASE"
 
 # copy relevant files from source to release
 echo "Copying relevant source files"
-mkdir -p "$PATH_SHARE"
+mkdir -p "$PATH_SHARE" || exit 1
+mv "$IPMIVIEW_TMP" "$PATH_SHARE/orig" || exit 1
 cp -t "$PATH_SHARE" "README.md" "copyright" || exit 1
-mkdir -p "$PATH_BIN"
+mkdir -p "$PATH_BIN" || exit 1
 chmod 0755 "ikvm" "supermicro-auto-browse" "ipmiview"
 cp -t "$PATH_BIN" "ikvm" "supermicro-auto-browse" "ipmiview" || exit 1
-
-# try to download hpilo scripts if they don't already exist
-if [ ! -f "$IPMIVIEW" ]; then
-    FILENAME_IN="IPMIView_2.19.0_build.210401_bundleJRE_Linux_x64.tar.gz"
-    echo "Downloading $FILENAME_IN ..."
-    if ! wget -q "https://www.supermicro.com/wftp/utility/IPMIView/Linux/$FILENAME_IN" -O "$IPMIVIEW"; then
-        echo "Could not download $IPMIVIEW" >&2
-        exit 1
-    fi
-fi
-
-# verify archive
-echo "Verifying $IPMIVIEW"
-if ! echo "$IPMIVIEW_MD5 $IPMIVIEW" | md5sum -c; then
-    echo "md5sum verification failed!" >&2
-    exit 1
-fi
-
-# sort files
-echo "Extracting original ipmiview files"
-mkdir -p "orig" || exit 1
-tar zxf "$IPMIVIEW" --strip 1 -C "orig"
-mv "orig" "$PATH_SHARE/orig" || exit 1
 
 # create Debian control file
 echo "Creating CONTROL file"
@@ -68,11 +104,11 @@ Version: $VERSION
 Section: net
 Priority: optional
 Architecture: all
-Depends: xdotool, netcat, curl (>= 7.64)
+Depends: xdotool, netcat, curl (>= 7)
 Recommends: chromium
 Maintainer: Bodo Endres <dev@muspekaren.se>
 Description: IPMIView Wrapper
- A terminal wrapper for Supermicro IPMIView toolset version 2.19.0 (06-04-2021).
+ A wrapper for the Supermicro IPMIView toolset.
 " >"$PATH_TARGET/control"
 
 # build
@@ -84,17 +120,14 @@ echo "Packing source"
 zip -q -r "$RELEASES/$NAME-$VERSION.source.zip" ./* \
     -x $RELEASES\* \
     -x .*\* \
-    -x ./*DEV_\*
+    -x ./*DEV_\* \
+    -x "$IPMIVIEW_TMP"
 wait
 
 # replace latest version
-cp "$PATH_BASE.deb" "$RELEASES/$NAME-LATEST.deb"
-cp "$PATH_BASE.source.zip" "$RELEASES/$NAME-LATEST.source.zip"
+ln -sf "$PATH_BASE.deb" "$RELEASES/$NAME-LATEST.deb"
+ln -sf "$PATH_BASE.source.zip" "$RELEASES/$NAME-LATEST.source.zip"
 
 # clean up
 echo "Clean up"
-rm -rf "$PATH_BASE"
-
-# check
-echo "Checking:"
-lintian -c "$PATH_BASE.deb"
+rm -rf "$PATH_BASE" "$IPMIVIEW_TMP"
